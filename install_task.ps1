@@ -59,6 +59,10 @@ if ($RunNow) {
         exit 1
     }
 
+    # Pull latest scripts from GitHub
+    Write-Host "Pulling latest scripts..."
+    git -C $ScriptDir pull 2>&1 | Write-Host
+
     # Load token from .env for the environment
     $env:GITHUB_TOKEN = ""
     if (Test-Path $EnvFile) {
@@ -149,9 +153,11 @@ $settings = New-ScheduledTaskSettingsSet `
 # SYSTEM needs the GITHUB_TOKEN as an environment variable
 # We'll create a wrapper script that sets it
 $wrapperPath = Join-Path $ScriptDir "sync_runner.cmd"
+$logPath = Join-Path $ScriptDir "sync.log"
 $wrapperContent = @"
 @echo off
 set "GITHUB_TOKEN=$githubToken"
+git -C "$ScriptDir" pull >>"$logPath" 2>&1
 "$python" "$SyncScript"
 "@
 Set-Content -Path $wrapperPath -Value $wrapperContent -Encoding ASCII

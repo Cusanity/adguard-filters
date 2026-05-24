@@ -37,6 +37,26 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
 LOG_PATH = SCRIPT_DIR / "sync.log"
 
+NTFY_URL = "https://ntfy.cusanity.synology.me/alerts"
+
+
+def notify_error(message):
+    """Send an error alert to ntfy."""
+    try:
+        req = urllib.request.Request(
+            NTFY_URL,
+            data=message.encode("utf-8"),
+            headers={
+                "Title": "AdGuard Sync Error",
+                "Priority": "high",
+                "Tags": "warning",
+            },
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=10)
+    except Exception as e:
+        log(f"WARNING: Failed to send ntfy alert: {e}")
+
 ADGUARD_USER_FILTER_ID = -2147483648  # INT_MIN = user rules partition in FLM
 
 # Known FLM database paths per platform (tried in order)
@@ -76,7 +96,9 @@ def log(msg):
 
 def load_config():
     if not CONFIG_PATH.exists():
-        log("ERROR: config.json not found")
+        msg = "config.json not found"
+        log(f"ERROR: {msg}")
+        notify_error(msg)
         sys.exit(1)
     with open(CONFIG_PATH) as f:
         return json.load(f)
@@ -93,6 +115,7 @@ def get_token():
                 if line.startswith("GITHUB_TOKEN="):
                     return line.split("=", 1)[1].strip().strip('"').strip("'")
     log("ERROR: GITHUB_TOKEN not found")
+    notify_error("GITHUB_TOKEN not found in environment or .env file")
     sys.exit(1)
 
 
@@ -144,6 +167,7 @@ def read_flm_db(db_path):
         shutil.copy2(str(db_path), tmp_path)
     except Exception as e:
         log(f"ERROR copying FLM database: {e}")
+        notify_error(f"Failed to copy FLM database: {e}")
         if tmp_path and os.path.exists(tmp_path):
             os.unlink(tmp_path)
         return set()
@@ -165,6 +189,7 @@ def read_flm_db(db_path):
         conn.close()
     except Exception as e:
         log(f"ERROR reading FLM database: {e}")
+        notify_error(f"Failed to read FLM database: {e}")
     finally:
         try:
             os.unlink(tmp_path)
@@ -284,7 +309,9 @@ def get_github_filter(config, token):
     url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}?ref={branch}"
     result, status = github_api("GET", url, token)
     if status != 200:
+        msg = f"Failed to fetch filter from GitHub (HTTP {status}): {result}"
         log(f"ERROR fetching filter from GitHub: {result}")
+        notify_error(msg)
         return None, None
     content = base64.b64decode(result["content"]).decode("utf-8")
     return content, result["sha"]
@@ -380,10 +407,14 @@ def merge_and_push(config, token, local_rules):
             time.sleep(2)
             continue
         else:
+            msg = f"Failed to push to GitHub (HTTP {status}): {result}"
             log(f"ERROR pushing to GitHub: {result}")
+            notify_error(msg)
             return False
 
-    log("ERROR: Max retries exceeded.")
+    msg = "Max retries exceeded while pushing to GitHub"
+    log(f"ERROR: {msg}")
+    notify_error(msg)
     return False
 
 
@@ -410,4 +441,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except SystemExit:
+        raise
+    except Exception as e:
+        log(f"FATAL: Unhandled exception: {e}")
+        notify_error(f"Unhandled exception in sync_daemon: {e}")
+        sys.exit(1)

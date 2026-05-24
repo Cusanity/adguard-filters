@@ -1,159 +1,252 @@
 # AdGuard Filter Sync
 
-Multi-device push → shared pull for custom AdGuard filter rules via GitHub.
+Automatically syncs custom AdGuard filter rules across all devices via a shared GitHub-hosted filter list.
 
-Any device pushes rules to a shared GitHub repo with **smart merge** — deduplication, redundant subdomain detection, conflict warnings, and sorted output. All AdGuard instances subscribe to the same raw URL and auto-update.
+- **Push**: Each device reads its local AdGuard user rules and commits them to GitHub.
+- **Pull**: Every AdGuard instance subscribes to the raw GitHub URL and auto-updates on its poll interval.
 
-## Setup
+## How it works
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  Each device runs sync_daemon.py (scheduled every 30 min)   │
+│                                                             │
+│  1. Read local AdGuard user rules from DB                   │
+│  2. Fetch filter.txt from GitHub                            │
+│  3. Merge new rules in (dedup, sort)                        │
+│  4. Push back to GitHub if anything changed                 │
+└────────────────────────┬────────────────────────────────────┘
+                         │  GitHub Contents API
+                         ▼
+              ┌─────────────────────┐
+              │  filter.txt         │  ← single source of truth
+              │  (raw.github.com)   │
+              └──────────┬──────────┘
+                         │  AdGuard subscription URL (auto-poll)
+          ┌──────────────┼──────────────┐
+          ▼              ▼              ▼
+    AdGuard Win    AdGuard Mac    AdGuard Home
+```
+
+---
+
+## One-time setup (do this once, shared across all devices)
 
 ### 1. Create the GitHub repo
 
+The repo already exists at: `https://github.com/Cusanity/adguard-filters`
+
+If setting up from scratch:
 ```bash
 gh repo create adguard-filters --public --clone
-# or create it at https://github.com/new
 ```
 
-Copy `filter.txt` into the repo and push it.
+### 2. Get a GitHub token
 
-### 2. Configure
+Go to https://github.com/settings/tokens → **Fine-grained token** or **Classic token** with `repo` scope (or `public_repo` for public repos).
+
+### 3. Configure
 
 ```bash
 cp config.example.json config.json
 cp .env.example .env
 ```
 
-Edit `config.json`:
+`config.json` — shared settings (safe to commit):
 ```json
 {
-    "owner": "your-github-username",
+    "owner": "Cusanity",
     "repo": "adguard-filters",
     "filter_path": "filter.txt",
-    "branch": "main"
+    "branch": "master"
 }
 ```
 
-Edit `.env`:
+`.env` — secret (never commit):
 ```
 GITHUB_TOKEN=ghp_your_token_here
 ```
 
-Get a token at https://github.com/settings/tokens with `repo` scope (private) or `public_repo` scope (public).
+### 4. Subscribe in AdGuard
 
-### 3. Subscribe in AdGuard
-
-Add this URL as a custom filter in every AdGuard instance:
-
+Add this as a **custom filter subscription** in every AdGuard instance:
 ```
-https://raw.githubusercontent.com/YOUR_USERNAME/adguard-filters/main/filter.txt
+https://raw.githubusercontent.com/Cusanity/adguard-filters/master/filter.txt
+```
+Set the update interval to **1 hour**.
+
+---
+
+## Per-device setup (repeat on each machine)
+
+Copy the repo folder to the device, configure it, then install the scheduler for that platform.
+
+### Windows — AdGuard for Windows
+
+**Requirements:** Python 3, AdGuard for Windows installed
+
+**Auto-sync daemon:**
+```powershell
+# Run as Administrator
+.\install_task.ps1                  # installs Scheduled Task, runs every 30 min
+.\install_task.ps1 -RunNow          # test immediately
+.\install_task.ps1 -IntervalMinutes 15   # custom interval
+.\install_task.ps1 -Uninstall       # remove
 ```
 
-Set update interval to 1 hour (or whatever `! Expires:` says in the filter header).
+**Local AdGuard DB path (auto-detected):**
+```
+C:\ProgramData\Adguard\FLM\agflm_standard.db
+```
+Table: `rules_list`, column: `rules_text`, where `filter_id = -2147483648`
 
-## Usage
-
-### Add/merge rules
-
-```bash
-# Python (any OS)
+**Manual push:**
+```powershell
 python push.py "||example.com^"
-python push.py "||ads.example.com^" "@@||allowed.example.com^"
+python push.py --list
+python push.py --remove "||example.com^"
+```
 
-# PowerShell (Windows)
-.\push.ps1 "||example.com^"
+---
 
-# Bash (Linux/Mac)
+### macOS — AdGuard for Mac
+
+**Requirements:** Python 3, AdGuard for Mac installed
+
+**Auto-sync daemon:**
+```bash
+chmod +x install_launchd.sh
+./install_launchd.sh                 # installs launchd agent, runs every 30 min
+./install_launchd.sh --run-now       # test immediately
+./install_launchd.sh --interval 15   # custom interval (minutes)
+./install_launchd.sh --uninstall     # remove
+```
+
+**Local AdGuard DB path (auto-detected, tried in order):**
+```
+~/Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/FLM/agflm_standard.db
+~/Library/Application Support/AdGuard/FLM/agflm_standard.db
+~/Library/Application Support/com.adguard.mac.adguard/FLM/agflm_standard.db
+```
+If none found, set `"adguard_flm_db": "/your/path/agflm_standard.db"` in `config.json`.
+
+**Manual push:**
+```bash
+python3 push.py "||example.com^"
 ./push.sh "||example.com^"
 ```
 
-### Merge from a file
+---
+
+### Linux — AdGuard Home
+
+**Requirements:** Python 3, AdGuard Home running
+
+**Auto-sync daemon:**
+```bash
+chmod +x install_cron.sh
+./install_cron.sh                    # installs cron job, runs every 30 min
+./install_cron.sh --run-now          # test immediately
+./install_cron.sh --interval 15      # custom interval
+./install_cron.sh --uninstall        # remove
+```
+
+**Add AdGuard Home connection to `config.json`:**
+```json
+{
+    "owner": "Cusanity",
+    "repo": "adguard-filters",
+    "filter_path": "filter.txt",
+    "branch": "master",
+    "adguard_home_url": "http://localhost:3000",
+    "adguard_home_user": "admin",
+    "adguard_home_password": "yourpassword"
+}
+```
+The daemon hits `GET /control/filtering/get_rules` on the AdGuard Home REST API.
+If the API is unreachable, it falls back to reading `AdGuardHome.yaml` directly from these paths (tried in order):
+```
+~/AdGuardHome/AdGuardHome.yaml
+/opt/AdGuardHome/AdGuardHome.yaml
+/etc/adguardhome/AdGuardHome.yaml
+/var/lib/adguardhome/AdGuardHome.yaml
+```
+Override with `"adguard_home_yaml": "/your/path/AdGuardHome.yaml"` in `config.json`.
+
+**Manual push:**
+```bash
+python3 push.py "||example.com^"
+./push.sh "||example.com^"
+```
+
+---
+
+### iOS / Android
+
+No daemon possible. These devices are **pull-only** — they subscribe to the filter URL and receive all rules automatically.
+
+If you need to push a rule from a mobile device, use [Working Copy](https://workingcopyapp.com/) (iOS) or Termux (Android):
+```bash
+python push.py "||example.com^"
+```
+
+---
+
+## Push rules manually (any platform)
 
 ```bash
+# Add rules
+python push.py "||ads.example.com^"
+python push.py "||a.com^" "@@||allowed.com^"
+
+# Read from file
 python push.py --merge-file local_rules.txt
-.\push.ps1 -MergeFile .\local_rules.txt
-./push.sh --merge-file local_rules.txt
-```
 
-### Remove rules
+# Remove a rule
+python push.py --remove "||ads.example.com^"
 
-```bash
-python push.py --remove "||example.com^"
-.\push.ps1 -Remove "||example.com^"
-./push.sh --remove "||example.com^"
-```
-
-### List current rules (grouped by type)
-
-```bash
+# List all current rules
 python push.py --list
-.\push.ps1 -List
-./push.sh --list
+
+# Read from stdin
+echo "||ads.example.com^" | python push.py --stdin
 ```
 
-### Pipe from stdin
+| Flag | Description |
+|------|-------------|
+| `--remove` | Remove instead of add |
+| `--list` | List all rules grouped by type |
+| `--stdin` | Read rules from stdin |
+| `--merge-file FILE` | Merge rules from a local file |
+| `--no-sort` | Don't sort rules by category |
+| `-m "msg"` | Custom git commit message |
 
-```bash
-echo "||example.com^" | python push.py --stdin
-cat new_rules.txt | python push.py --stdin
-```
+---
 
-### Options
+## Smart merge behavior
 
-| Flag | Python | PowerShell | Bash |
-|------|--------|-----------|------|
-| Don't sort | `--no-sort` | `-NoSort` | `--no-sort` |
-| Force add redundant | `--force` | — | — |
-| Custom commit msg | `-m "msg"` | `-Message "msg"` | `-m "msg"` |
+Rules are never blindly appended. The scripts always:
 
-## Smart Merge Behavior
+1. **Deduplicate** — skip rules already in the filter
+2. **Detect redundant subdomains** — skip `||sub.example.com^` if `||example.com^` already exists
+3. **Warn on conflicts** — alert if a block and exception exist for the same domain
+4. **Sort by category** — blocks → exceptions → cosmetic → other
+5. **Retry on conflict** — if two devices push simultaneously (HTTP 409), re-fetch and re-merge up to 3 times
 
-The scripts don't blindly append. They:
+---
 
-1. **Deduplicate** — skips rules that already exist in the remote filter
-2. **Detect redundant subdomains** — `||sub.example.com^` is skipped if `||example.com^` already blocks the parent domain
-3. **Warn about conflicts** — alerts you if both a block rule and an exception exist for the same domain
-4. **Sort by category** — organizes rules into blocks, exceptions, cosmetic, and other (disable with `--no-sort`)
-5. **Retry on conflict** — if another device pushed simultaneously (SHA mismatch / HTTP 409), automatically re-fetches and re-merges up to 3 times
+## Troubleshooting
 
-## How it works
+**`sync_daemon.py` finds 0 rules**
+- Windows: confirm `C:\ProgramData\Adguard\FLM\agflm_standard.db` exists and you've added at least one user rule in AdGuard's UI
+- macOS: AdGuard may use a different group container path — set `"adguard_flm_db"` in `config.json`
+- Linux: confirm AdGuard Home is running and the URL/credentials in `config.json` are correct
 
-```
-┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│  Device A   │     │  Device B   │     │  Device C   │
-│  push.py    │     │  push.ps1   │     │  push.sh    │
-└──────┬──────┘     └──────┬──────┘     └──────┬──────┘
-       │                   │                   │
-       └───────────┬───────┴───────────────────┘
-                   ▼
-        ┌─────────────────────┐
-        │   GitHub API        │
-        │   (Contents API)    │
-        └──────────┬──────────┘
-                   │
-                   ▼
-        ┌─────────────────────┐
-        │   filter.txt        │
-        │   (raw.github.com)  │
-        └──────────┬──────────┘
-                   │
-       ┌───────────┼───────────────────┐
-       ▼           ▼                   ▼
-┌────────────┐ ┌────────────┐  ┌────────────┐
-│ AdGuard    │ │ AdGuard    │  │ AdGuard    │
-│ Instance 1 │ │ Instance 2 │  │ Instance 3 │
-└────────────┘ └────────────┘  └────────────┘
-```
+**`ERROR: GITHUB_TOKEN not found`**
+- Ensure `.env` exists with `GITHUB_TOKEN=ghp_...`
+- On Windows the Scheduled Task uses `sync_runner.cmd` which is auto-generated by `install_task.ps1` and contains the token
 
-- **Push**: Any device uses the GitHub Contents API to update `filter.txt` (commit directly).
-- **Pull**: All AdGuard instances poll the raw URL on their configured interval.
-- **Dedup**: Scripts automatically skip duplicate rules.
-- **Conflict-free**: The GitHub API uses SHA-based optimistic locking — if two devices push simultaneously, one will get a 409 and can retry.
+**Rules appear in AdGuard but not on GitHub**
+- Run `python sync_daemon.py` manually and check the output / `sync.log`
 
-## Deploy on each device
-
-Just copy the scripts + config to each device. No git installation required — everything uses the GitHub REST API via `curl`/`urllib`/`Invoke-RestMethod`.
-
-Minimum requirements per platform:
-- **Windows**: PowerShell 5+ (built-in) or Python 3
-- **Linux/Mac**: bash + curl, or Python 3
-- **Android (Termux)**: Python 3
-- **iOS (a]Shell/iSH)**: Python 3
+**`sync.log` location:** same directory as the scripts

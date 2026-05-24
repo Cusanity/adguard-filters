@@ -1,23 +1,30 @@
 """
 AdGuard Filter Sync Daemon
 
-Runs as a Windows Scheduled Task with elevated privileges (SYSTEM) to:
-1. Read user rules from AdGuard's database (ESE format)
+Runs as a scheduled task/cron/launchd job to:
+1. Read user rules from the local AdGuard installation
 2. Fetch the current shared filter from GitHub
 3. Merge (union) both rule sets
 4. Push the merged result to GitHub if anything changed
 
-This enables automatic bi-directional sync:
-- Rules added in AdGuard UI → this daemon extracts them → pushes to GitHub → other devices pull
-- Rules added via push.py on any device → GitHub → AdGuard pulls the subscription URL
+Supported platforms:
+  - Windows  : AdGuard for Windows (FLM SQLite at C:\\ProgramData\\Adguard\\FLM\\)
+  - macOS    : AdGuard for Mac     (FLM SQLite in ~/Library/Group Containers/ or
+                                    ~/Library/Application Support/AdGuard/)
+  - Linux    : AdGuard Home        (YAML config or REST API at localhost:3000)
+
+Override the DB/config path in config.json:
+  "adguard_flm_db":   "/custom/path/to/agflm_standard.db"
+  "adguard_home_url": "http://localhost:3000"   (Linux/AdGuard Home)
 """
 
 import base64
 import json
 import os
-import re
-import subprocess
+import platform
+import sqlite3
 import sys
+import shutil
 import tempfile
 import time
 import urllib.request
@@ -30,7 +37,30 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
 LOG_PATH = SCRIPT_DIR / "sync.log"
 
-ADGUARD_DB = Path(r"C:\ProgramData\Adguard\adguard.db")
+ADGUARD_USER_FILTER_ID = -2147483648  # INT_MIN = user rules partition in FLM
+
+# Known FLM database paths per platform (tried in order)
+_FLM_PATHS = {
+    "Windows": [
+        Path(r"C:\ProgramData\Adguard\FLM\agflm_standard.db"),
+    ],
+    "Darwin": [
+        # Mac App Store build (sandboxed, group container)
+        Path.home() / "Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/FLM/agflm_standard.db",
+        # Direct-download build
+        Path.home() / "Library/Application Support/AdGuard/FLM/agflm_standard.db",
+        Path.home() / "Library/Application Support/com.adguard.mac.adguard/FLM/agflm_standard.db",
+    ],
+    # Linux/other: AdGuard Home (no desktop FLM app); handled separately via YAML/API
+}
+
+# AdGuard Home config search paths (Linux / self-hosted macOS)
+_ADGUARD_HOME_YAML_PATHS = [
+    Path.home() / "AdGuardHome/AdGuardHome.yaml",
+    Path("/opt/AdGuardHome/AdGuardHome.yaml"),
+    Path("/etc/adguardhome/AdGuardHome.yaml"),
+    Path("/var/lib/adguardhome/AdGuardHome.yaml"),
+]
 
 
 def log(msg):
@@ -82,290 +112,166 @@ def github_api(method, url, token, data=None):
         return {"error": error_body, "status": e.code}, e.code
 
 
-# --- AdGuard DB Reading (ESE / SQLite / raw) ---
+# --- AdGuard rule reading (cross-platform) ---
 
-def identify_db_format(db_path):
-    """Identify the database format by reading magic bytes."""
+def find_flm_db(config):
+    """
+    Locate the FLM SQLite database.
+    Checks config override first, then platform-specific default paths.
+    """
+    # Config override
+    override = config.get("adguard_flm_db")
+    if override:
+        p = Path(override)
+        if p.exists():
+            return p
+        log(f"WARNING: adguard_flm_db in config.json not found: {override}")
+
+    system = platform.system()
+    candidates = _FLM_PATHS.get(system, [])
+    for p in candidates:
+        if p.exists():
+            return p
+    return None
+
+
+def read_flm_db(db_path):
+    """Read user rules from an AdGuard FLM SQLite database (Windows/macOS)."""
+    tmp_path = None
     try:
-        with open(db_path, 'rb') as f:
-            header = f.read(64)
-    except PermissionError:
-        return "locked"
-    except Exception as e:
-        return f"error:{e}"
-
-    if header[:16] == b'SQLite format 3\x00':
-        return "sqlite"
-
-    # ESE/JET database check - multiple known signatures
-    # JET Blue (ESE) has checksum at offset 4, and database signature
-    # The file typically has 0xEFCDAB89 somewhere in the first page
-    if len(header) >= 8:
-        # ESE databases have a specific page size and format
-        # Check for common ESE patterns
-        val_at_4 = int.from_bytes(header[4:8], 'little')
-        if val_at_4 == 0xEFCDAB89:
-            return "ese"
-        # Another ESE indicator: magic at different offset depending on version
-        if b'\xef\xcd\xab\x89' in header:
-            return "ese"
-
-    # Try broader ESE detection - check if esentutl can parse it
-    return "unknown"
-
-
-def copy_db_via_vss(db_path, dest_path):
-    """Copy a locked database file using Volume Shadow Copy."""
-    try:
-        result = subprocess.run(
-            ["esentutl", "/y", str(db_path), "/vss", "/d", str(dest_path)],
-            capture_output=True, text=True, timeout=30
-        )
-        if result.returncode == 0:
-            return True
-        log(f"VSS copy failed: {result.stderr.strip()}")
-
-        # Fallback: try direct copy (works if running as SYSTEM)
-        import shutil
-        shutil.copy2(str(db_path), str(dest_path))
-        return True
-    except Exception as e:
-        log(f"Failed to copy DB: {e}")
-        return False
-
-
-def read_ese_database(db_path):
-    """
-    Read rules from an ESE (Extensible Storage Engine) database.
-    Uses esentutl to dump table info, then reads the raw file for text patterns.
-    """
-    rules = set()
-
-    # Strategy 1: Use raw binary scan for filter rules in the DB file
-    # ESE stores data in pages, but text strings are often readable in raw bytes
-    rules.update(scan_file_for_rules(db_path))
-
-    return rules
-
-
-def scan_file_for_rules(file_path):
-    """
-    Scan a binary file for text that looks like AdGuard filter rules.
-    Works regardless of the database format by finding UTF-8/UTF-16 strings.
-    """
-    rules = set()
-
-    try:
-        with open(file_path, 'rb') as f:
-            data = f.read()
-    except Exception as e:
-        log(f"Cannot read file: {e}")
-        return rules
-
-    # Scan for UTF-8 strings that look like filter rules
-    # Pattern: lines starting with || or @@ or containing ## (common filter patterns)
-    utf8_rules = extract_rules_from_bytes(data, 'utf-8')
-    rules.update(utf8_rules)
-
-    # Also try UTF-16LE (Windows native string encoding)
-    utf16_rules = extract_rules_from_bytes(data, 'utf-16-le')
-    rules.update(utf16_rules)
-
-    return rules
-
-
-def extract_rules_from_bytes(data, encoding):
-    """Extract filter rules from raw bytes using a specific encoding."""
-    rules = set()
-
-    try:
-        if encoding == 'utf-8':
-            text = data.decode('utf-8', errors='ignore')
-        else:
-            text = data.decode(encoding, errors='ignore')
-    except Exception:
-        return rules
-
-    # Find sequences that look like filter rules
-    # Domain blocking rules: ||domain.tld^
-    for match in re.finditer(r'\|\|[a-zA-Z0-9][\w.\-]+\^(?:\$[^\x00\n\r]{0,100})?', text):
-        rule = match.group(0).strip()
-        if is_filter_rule(rule) and is_plausible_user_rule(rule):
-            rules.add(rule)
-
-    # Exception rules: @@||domain.tld^
-    for match in re.finditer(r'@@\|\|[a-zA-Z0-9][\w.\-]+\^(?:\$[^\x00\n\r]{0,100})?', text):
-        rule = match.group(0).strip()
-        if is_filter_rule(rule):
-            rules.add(rule)
-
-    # Cosmetic rules: domain.tld##selector
-    for match in re.finditer(r'[a-zA-Z0-9][\w.\-]*##[^\x00\n\r]{1,200}', text):
-        rule = match.group(0).strip()
-        if is_filter_rule(rule) and not looks_like_garbage(rule):
-            rules.add(rule)
-
-    # Host-format rules: 0.0.0.0 domain or 127.0.0.1 domain
-    for match in re.finditer(r'(?:0\.0\.0\.0|127\.0\.0\.1)\s+[a-zA-Z0-9][\w.\-]+', text):
-        rule = match.group(0).strip()
-        if is_filter_rule(rule):
-            rules.add(rule)
-
-    # Newline-separated blocks that look like filter lists
-    # (AdGuard might store user rules as a single text blob)
-    for match in re.finditer(r'(?:(?:\|\|[\w.\-]+\^[^\x00\n\r]*[\n\r]){2,})', text):
-        block = match.group(0)
-        for line in block.split('\n'):
-            line = line.strip().strip('\r')
-            if is_filter_rule(line):
-                rules.add(line)
-
-    return rules
-
-
-def is_filter_rule(line):
-    """Check if a line looks like a valid AdGuard filter rule."""
-    if not line:
-        return False
-    if line.startswith('!') or line.startswith('#'):
-        return False
-    if len(line) < 4 or len(line) > 500:
-        return False
-
-    indicators = [
-        line.startswith('||'),
-        line.startswith('@@'),
-        line.startswith('|'),
-        '##' in line,
-        '#@#' in line,
-        '#$#' in line,
-        '#%#' in line,
-        line.startswith('0.0.0.0 '),
-        line.startswith('127.0.0.1 '),
-    ]
-    return any(indicators)
-
-
-def is_plausible_user_rule(rule):
-    """
-    Filter out rules that are obviously from built-in filter lists rather than user-added.
-    User rules tend to be for specific, recognizable domains.
-    """
-    # Skip if it contains null bytes or control characters (binary artifact)
-    if any(ord(c) < 32 and c not in '\n\r\t' for c in rule):
-        return False
-    # Skip if domain part looks like random garbage (malware domains in built-in lists)
-    domain = extract_domain_from_rule(rule)
-    if domain:
-        # Very long random-looking domains are likely from subscription lists, not user rules
-        if len(domain) > 50 and not any(c == '-' for c in domain):
-            return False
-        # Domains with excessive randomness (no vowels in a long segment)
-        parts = domain.split('.')
-        for part in parts:
-            if len(part) > 15 and not re.search(r'[aeiou]', part):
-                return False
-    return True
-
-
-def extract_domain_from_rule(rule):
-    """Extract domain from a rule like ||domain.com^"""
-    m = re.match(r'^(?:@@)?\|\|([a-zA-Z0-9][\w.\-]+)\^', rule)
-    return m.group(1) if m else None
-
-
-def looks_like_garbage(text):
-    """Detect binary/garbage strings that aren't real rules."""
-    if '\x00' in text:
-        return True
-    # Too many non-printable or unusual characters
-    weird_chars = sum(1 for c in text if ord(c) > 127 or ord(c) < 32)
-    return weird_chars > len(text) * 0.1
-
-
-def read_adguard_rules():
-    """
-    Main entry point: read user rules from AdGuard's database.
-    Handles different database formats automatically.
-    """
-    if not ADGUARD_DB.exists():
-        log("ERROR: AdGuard database not found at expected path.")
-        return set()
-
-    log(f"Checking database format...")
-    fmt = identify_db_format(ADGUARD_DB)
-    log(f"Database format: {fmt}")
-
-    if fmt == "locked":
-        # Try VSS copy
-        log("DB file locked, attempting VSS copy...")
-        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
             tmp_path = tmp.name
-        try:
-            if copy_db_via_vss(ADGUARD_DB, tmp_path):
-                fmt = identify_db_format(Path(tmp_path))
-                log(f"Copied DB format: {fmt}")
-                rules = read_from_db_file(Path(tmp_path), fmt)
-            else:
-                rules = set()
-        finally:
-            try:
-                os.unlink(tmp_path)
-            except Exception:
-                pass
-        return rules
-
-    return read_from_db_file(ADGUARD_DB, fmt)
-
-
-def read_from_db_file(db_path, fmt):
-    """Read rules from a database file of known format."""
-    if fmt == "sqlite":
-        return read_sqlite_database(db_path)
-    elif fmt in ("ese", "unknown"):
-        # For ESE or unknown formats, scan raw bytes
-        return read_ese_database(db_path)
-    else:
-        log(f"Cannot handle format: {fmt}")
+        shutil.copy2(str(db_path), tmp_path)
+    except Exception as e:
+        log(f"ERROR copying FLM database: {e}")
+        if tmp_path and os.path.exists(tmp_path):
+            os.unlink(tmp_path)
         return set()
 
-
-def read_sqlite_database(db_path):
-    """Read rules from a SQLite database."""
-    import sqlite3
     rules = set()
     try:
-        uri = f"file:{db_path}?mode=ro"
-        conn = sqlite3.connect(uri, uri=True, timeout=5)
+        conn = sqlite3.connect(tmp_path, timeout=5)
         cursor = conn.cursor()
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
-        tables = [row[0] for row in cursor.fetchall()]
-
-        for table in tables:
-            try:
-                cursor.execute(f"PRAGMA table_info([{table}])")
-                cols = cursor.fetchall()
-                text_cols = [c[1] for c in cols if c[2].upper() in ('TEXT', 'BLOB', 'CLOB', '')]
-
-                for col in text_cols:
-                    cursor.execute(f"SELECT [{col}] FROM [{table}]")
-                    for row in cursor.fetchall():
-                        val = row[0]
-                        if isinstance(val, bytes):
-                            val = val.decode('utf-8', errors='ignore')
-                        if isinstance(val, str):
-                            for line in val.split('\n'):
-                                line = line.strip()
-                                if is_filter_rule(line):
-                                    rules.add(line)
-            except Exception:
-                continue
+        cursor.execute(
+            "SELECT rules_text FROM rules_list WHERE filter_id = ?",
+            (ADGUARD_USER_FILTER_ID,)
+        )
+        row = cursor.fetchone()
+        if row and row[0]:
+            for line in row[0].splitlines():
+                line = line.strip()
+                if line and not line.startswith("!") and not line.startswith("#"):
+                    rules.add(line)
         conn.close()
     except Exception as e:
-        log(f"SQLite error: {e}")
-        # Fallback to raw scan
-        rules = scan_file_for_rules(db_path)
+        log(f"ERROR reading FLM database: {e}")
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
     return rules
+
+
+def read_adguard_home_rules(config):
+    """
+    Read user rules from AdGuard Home (Linux / self-hosted).
+    Tries the REST API first, then falls back to YAML config file.
+    """
+    # --- REST API ---
+    base_url = config.get("adguard_home_url", "http://localhost:3000").rstrip("/")
+    ag_user = config.get("adguard_home_user", "")
+    ag_pass = config.get("adguard_home_password", "")
+
+    try:
+        req = urllib.request.Request(f"{base_url}/control/filtering/get_rules")
+        if ag_user:
+            creds = base64.b64encode(f"{ag_user}:{ag_pass}".encode()).decode()
+            req.add_header("Authorization", f"Basic {creds}")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read().decode())
+            raw = data.get("user_rules") or data.get("rules") or []
+            rules = set()
+            if isinstance(raw, list):
+                for line in raw:
+                    line = line.strip()
+                    if line and not line.startswith("!") and not line.startswith("#"):
+                        rules.add(line)
+            elif isinstance(raw, str):
+                for line in raw.splitlines():
+                    line = line.strip()
+                    if line and not line.startswith("!") and not line.startswith("#"):
+                        rules.add(line)
+            if rules:
+                log(f"Read {len(rules)} rule(s) from AdGuard Home API ({base_url})")
+                return rules
+    except Exception as e:
+        log(f"AdGuard Home API unavailable ({base_url}): {e}")
+
+    # --- YAML fallback ---
+    override_yaml = config.get("adguard_home_yaml")
+    yaml_candidates = ([Path(override_yaml)] if override_yaml else []) + _ADGUARD_HOME_YAML_PATHS
+
+    for yaml_path in yaml_candidates:
+        if not yaml_path.exists():
+            continue
+        try:
+            rules = set()
+            in_user_rules = False
+            with open(yaml_path, encoding="utf-8") as f:
+                for line in f:
+                    stripped = line.rstrip("\n")
+                    if stripped.strip() == "user_rules:":
+                        in_user_rules = True
+                        continue
+                    if in_user_rules:
+                        # YAML list items start with "  - "
+                        if stripped.startswith("  - "):
+                            rule = stripped[4:].strip().strip("'\"")
+                            if rule and not rule.startswith("!") and not rule.startswith("#"):
+                                rules.add(rule)
+                        elif stripped and not stripped.startswith(" "):
+                            break  # next top-level key
+            if rules:
+                log(f"Read {len(rules)} rule(s) from AdGuard Home YAML ({yaml_path})")
+                return rules
+        except Exception as e:
+            log(f"Error reading AdGuard Home YAML {yaml_path}: {e}")
+            continue
+
+    return set()
+
+
+def read_adguard_rules(config):
+    """
+    Main entry point: read user rules from the local AdGuard installation.
+    Dispatches to the right reader based on platform and config.
+    """
+    system = platform.system()
+    log(f"Platform: {system}")
+
+    # Linux (and explicitly configured AdGuard Home)
+    if system == "Linux" or config.get("adguard_home_url") or config.get("adguard_home_yaml"):
+        rules = read_adguard_home_rules(config)
+        if rules:
+            return rules
+        # If on Linux with no AdGuard Home found, fall through to FLM check below
+        if system == "Linux":
+            log("No AdGuard Home found. Set 'adguard_home_url' or 'adguard_home_yaml' in config.json.")
+            return set()
+
+    # Windows / macOS: FLM SQLite database
+    db_path = find_flm_db(config)
+    if db_path:
+        log(f"Found FLM database: {db_path}")
+        return read_flm_db(db_path)
+
+    log("ERROR: AdGuard FLM database not found.")
+    if system == "Darwin":
+        log("  Tried: " + ", ".join(str(p) for p in _FLM_PATHS.get("Darwin", [])))
+        log("  Override with 'adguard_flm_db' in config.json if your path differs.")
+    return set()
 
 
 def get_github_filter(config, token):
@@ -474,12 +380,11 @@ def main():
     config = load_config()
     token = get_token()
 
-    # Read rules from AdGuard's database
-    log(f"Reading AdGuard DB: {ADGUARD_DB}")
-    local_rules = read_adguard_rules()
+    # Read rules from the local AdGuard installation
+    local_rules = read_adguard_rules(config)
 
     if not local_rules:
-        log("No user rules found in AdGuard DB.")
+        log("No user rules found in local AdGuard.")
         log("This is normal if you haven't added custom rules yet.")
         return
 

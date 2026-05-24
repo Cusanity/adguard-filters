@@ -1,0 +1,6 @@
+{
+    "owner": "YOUR_GITHUB_USERNAME",
+    "repo": "adguard-filters",
+    "filter_path": "filter.txt",
+    "branch": "main"
+}

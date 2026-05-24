@@ -307,9 +307,19 @@ def parse_filter(content):
     return header_lines, rule_lines
 
 
+def write_local_filter(config, content):
+    """Write content to the local filter.txt file."""
+    local_path = SCRIPT_DIR / config.get("filter_path", "filter.txt")
+    try:
+        local_path.write_text(content, encoding="utf-8")
+    except Exception as e:
+        log(f"WARNING: Could not update local {local_path.name}: {e}")
+
+
 def merge_and_push(config, token, local_rules):
     """
     Merge local AdGuard rules with GitHub filter and push if changed.
+    Always updates the local filter.txt to match GitHub (before and after push).
     Uses retry logic for concurrent edit handling.
     """
     max_retries = 3
@@ -318,6 +328,9 @@ def merge_and_push(config, token, local_rules):
         content, sha = get_github_filter(config, token)
         if content is None:
             return False
+
+        # Keep local file up to date with whatever is on GitHub right now
+        write_local_filter(config, content)
 
         header_lines, existing_rule_lines = parse_filter(content)
         existing_rules = set(r.strip() for r in existing_rule_lines if r.strip())
@@ -351,7 +364,7 @@ def merge_and_push(config, token, local_rules):
         url = f"https://api.github.com/repos/{owner}/{repo}/contents/{path}"
 
         data = {
-            "message": f"Auto-sync {len(new_rules)} rule(s) from {os.environ.get('COMPUTERNAME', 'device')}",
+            "message": f"Auto-sync {len(new_rules)} rule(s) from {os.environ.get('COMPUTERNAME', platform.node())}",
             "content": base64.b64encode(new_content.encode("utf-8")).decode("ascii"),
             "sha": sha,
             "branch": branch,
@@ -360,6 +373,7 @@ def merge_and_push(config, token, local_rules):
         result, status = github_api("PUT", url, token, data)
         if status in (200, 201):
             log(f"Synced {len(new_rules)} new rule(s) to GitHub.")
+            write_local_filter(config, new_content)
             return True
         elif status == 409 and attempt < max_retries - 1:
             log("Conflict detected, retrying...")

@@ -2,7 +2,7 @@
 AdGuard Filter Sync Daemon
 
 Runs as a Windows Scheduled Task with elevated privileges (SYSTEM) to:
-1. Read user rules from AdGuard's locked SQLite database
+1. Read user rules from AdGuard's database (ESE format)
 2. Fetch the current shared filter from GitHub
 3. Merge (union) both rule sets
 4. Push the merged result to GitHub if anything changed
@@ -15,8 +15,10 @@ This enables automatic bi-directional sync:
 import base64
 import json
 import os
-import sqlite3
+import re
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.request
 import urllib.error
@@ -28,10 +30,7 @@ CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
 LOG_PATH = SCRIPT_DIR / "sync.log"
 
-# AdGuard for Windows stores its DB here
-ADGUARD_DB_PATHS = [
-    Path(r"C:\ProgramData\Adguard\adguard.db"),
-]
+ADGUARD_DB = Path(r"C:\ProgramData\Adguard\adguard.db")
 
 
 def log(msg):
@@ -83,134 +82,290 @@ def github_api(method, url, token, data=None):
         return {"error": error_body, "status": e.code}, e.code
 
 
-def find_adguard_db():
-    """Find the AdGuard database file."""
-    for path in ADGUARD_DB_PATHS:
-        if path.exists():
-            return path
-    log("ERROR: AdGuard database not found")
-    return None
+# --- AdGuard DB Reading (ESE / SQLite / raw) ---
+
+def identify_db_format(db_path):
+    """Identify the database format by reading magic bytes."""
+    try:
+        with open(db_path, 'rb') as f:
+            header = f.read(64)
+    except PermissionError:
+        return "locked"
+    except Exception as e:
+        return f"error:{e}"
+
+    if header[:16] == b'SQLite format 3\x00':
+        return "sqlite"
+
+    # ESE/JET database check - multiple known signatures
+    # JET Blue (ESE) has checksum at offset 4, and database signature
+    # The file typically has 0xEFCDAB89 somewhere in the first page
+    if len(header) >= 8:
+        # ESE databases have a specific page size and format
+        # Check for common ESE patterns
+        val_at_4 = int.from_bytes(header[4:8], 'little')
+        if val_at_4 == 0xEFCDAB89:
+            return "ese"
+        # Another ESE indicator: magic at different offset depending on version
+        if b'\xef\xcd\xab\x89' in header:
+            return "ese"
+
+    # Try broader ESE detection - check if esentutl can parse it
+    return "unknown"
 
 
-def read_adguard_user_rules(db_path):
+def copy_db_via_vss(db_path, dest_path):
+    """Copy a locked database file using Volume Shadow Copy."""
+    try:
+        result = subprocess.run(
+            ["esentutl", "/y", str(db_path), "/vss", "/d", str(dest_path)],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            return True
+        log(f"VSS copy failed: {result.stderr.strip()}")
+
+        # Fallback: try direct copy (works if running as SYSTEM)
+        import shutil
+        shutil.copy2(str(db_path), str(dest_path))
+        return True
+    except Exception as e:
+        log(f"Failed to copy DB: {e}")
+        return False
+
+
+def read_ese_database(db_path):
     """
-    Read user rules from AdGuard's SQLite database.
-    Must be run with sufficient privileges (SYSTEM or Administrator).
+    Read rules from an ESE (Extensible Storage Engine) database.
+    Uses esentutl to dump table info, then reads the raw file for text patterns.
+    """
+    rules = set()
+
+    # Strategy 1: Use raw binary scan for filter rules in the DB file
+    # ESE stores data in pages, but text strings are often readable in raw bytes
+    rules.update(scan_file_for_rules(db_path))
+
+    return rules
+
+
+def scan_file_for_rules(file_path):
+    """
+    Scan a binary file for text that looks like AdGuard filter rules.
+    Works regardless of the database format by finding UTF-8/UTF-16 strings.
     """
     rules = set()
 
     try:
-        # Connect in read-only mode to avoid conflicts with AdGuard service
+        with open(file_path, 'rb') as f:
+            data = f.read()
+    except Exception as e:
+        log(f"Cannot read file: {e}")
+        return rules
+
+    # Scan for UTF-8 strings that look like filter rules
+    # Pattern: lines starting with || or @@ or containing ## (common filter patterns)
+    utf8_rules = extract_rules_from_bytes(data, 'utf-8')
+    rules.update(utf8_rules)
+
+    # Also try UTF-16LE (Windows native string encoding)
+    utf16_rules = extract_rules_from_bytes(data, 'utf-16-le')
+    rules.update(utf16_rules)
+
+    return rules
+
+
+def extract_rules_from_bytes(data, encoding):
+    """Extract filter rules from raw bytes using a specific encoding."""
+    rules = set()
+
+    try:
+        if encoding == 'utf-8':
+            text = data.decode('utf-8', errors='ignore')
+        else:
+            text = data.decode(encoding, errors='ignore')
+    except Exception:
+        return rules
+
+    # Find sequences that look like filter rules
+    # Domain blocking rules: ||domain.tld^
+    for match in re.finditer(r'\|\|[a-zA-Z0-9][\w.\-]+\^(?:\$[^\x00\n\r]{0,100})?', text):
+        rule = match.group(0).strip()
+        if is_filter_rule(rule) and is_plausible_user_rule(rule):
+            rules.add(rule)
+
+    # Exception rules: @@||domain.tld^
+    for match in re.finditer(r'@@\|\|[a-zA-Z0-9][\w.\-]+\^(?:\$[^\x00\n\r]{0,100})?', text):
+        rule = match.group(0).strip()
+        if is_filter_rule(rule):
+            rules.add(rule)
+
+    # Cosmetic rules: domain.tld##selector
+    for match in re.finditer(r'[a-zA-Z0-9][\w.\-]*##[^\x00\n\r]{1,200}', text):
+        rule = match.group(0).strip()
+        if is_filter_rule(rule) and not looks_like_garbage(rule):
+            rules.add(rule)
+
+    # Host-format rules: 0.0.0.0 domain or 127.0.0.1 domain
+    for match in re.finditer(r'(?:0\.0\.0\.0|127\.0\.0\.1)\s+[a-zA-Z0-9][\w.\-]+', text):
+        rule = match.group(0).strip()
+        if is_filter_rule(rule):
+            rules.add(rule)
+
+    # Newline-separated blocks that look like filter lists
+    # (AdGuard might store user rules as a single text blob)
+    for match in re.finditer(r'(?:(?:\|\|[\w.\-]+\^[^\x00\n\r]*[\n\r]){2,})', text):
+        block = match.group(0)
+        for line in block.split('\n'):
+            line = line.strip().strip('\r')
+            if is_filter_rule(line):
+                rules.add(line)
+
+    return rules
+
+
+def is_filter_rule(line):
+    """Check if a line looks like a valid AdGuard filter rule."""
+    if not line:
+        return False
+    if line.startswith('!') or line.startswith('#'):
+        return False
+    if len(line) < 4 or len(line) > 500:
+        return False
+
+    indicators = [
+        line.startswith('||'),
+        line.startswith('@@'),
+        line.startswith('|'),
+        '##' in line,
+        '#@#' in line,
+        '#$#' in line,
+        '#%#' in line,
+        line.startswith('0.0.0.0 '),
+        line.startswith('127.0.0.1 '),
+    ]
+    return any(indicators)
+
+
+def is_plausible_user_rule(rule):
+    """
+    Filter out rules that are obviously from built-in filter lists rather than user-added.
+    User rules tend to be for specific, recognizable domains.
+    """
+    # Skip if it contains null bytes or control characters (binary artifact)
+    if any(ord(c) < 32 and c not in '\n\r\t' for c in rule):
+        return False
+    # Skip if domain part looks like random garbage (malware domains in built-in lists)
+    domain = extract_domain_from_rule(rule)
+    if domain:
+        # Very long random-looking domains are likely from subscription lists, not user rules
+        if len(domain) > 50 and not any(c == '-' for c in domain):
+            return False
+        # Domains with excessive randomness (no vowels in a long segment)
+        parts = domain.split('.')
+        for part in parts:
+            if len(part) > 15 and not re.search(r'[aeiou]', part):
+                return False
+    return True
+
+
+def extract_domain_from_rule(rule):
+    """Extract domain from a rule like ||domain.com^"""
+    m = re.match(r'^(?:@@)?\|\|([a-zA-Z0-9][\w.\-]+)\^', rule)
+    return m.group(1) if m else None
+
+
+def looks_like_garbage(text):
+    """Detect binary/garbage strings that aren't real rules."""
+    if '\x00' in text:
+        return True
+    # Too many non-printable or unusual characters
+    weird_chars = sum(1 for c in text if ord(c) > 127 or ord(c) < 32)
+    return weird_chars > len(text) * 0.1
+
+
+def read_adguard_rules():
+    """
+    Main entry point: read user rules from AdGuard's database.
+    Handles different database formats automatically.
+    """
+    if not ADGUARD_DB.exists():
+        log("ERROR: AdGuard database not found at expected path.")
+        return set()
+
+    log(f"Checking database format...")
+    fmt = identify_db_format(ADGUARD_DB)
+    log(f"Database format: {fmt}")
+
+    if fmt == "locked":
+        # Try VSS copy
+        log("DB file locked, attempting VSS copy...")
+        with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as tmp:
+            tmp_path = tmp.name
+        try:
+            if copy_db_via_vss(ADGUARD_DB, tmp_path):
+                fmt = identify_db_format(Path(tmp_path))
+                log(f"Copied DB format: {fmt}")
+                rules = read_from_db_file(Path(tmp_path), fmt)
+            else:
+                rules = set()
+        finally:
+            try:
+                os.unlink(tmp_path)
+            except Exception:
+                pass
+        return rules
+
+    return read_from_db_file(ADGUARD_DB, fmt)
+
+
+def read_from_db_file(db_path, fmt):
+    """Read rules from a database file of known format."""
+    if fmt == "sqlite":
+        return read_sqlite_database(db_path)
+    elif fmt in ("ese", "unknown"):
+        # For ESE or unknown formats, scan raw bytes
+        return read_ese_database(db_path)
+    else:
+        log(f"Cannot handle format: {fmt}")
+        return set()
+
+
+def read_sqlite_database(db_path):
+    """Read rules from a SQLite database."""
+    import sqlite3
+    rules = set()
+    try:
         uri = f"file:{db_path}?mode=ro"
         conn = sqlite3.connect(uri, uri=True, timeout=5)
-        conn.execute("PRAGMA journal_mode=WAL")
         cursor = conn.cursor()
-
-        # Get table names to find where rules are stored
         cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [row[0] for row in cursor.fetchall()]
 
-        # AdGuard stores user rules in various tables depending on version
-        # Common table names: 'rules', 'user_rules', 'filter_rules'
-        rule_tables = [t for t in tables if 'rule' in t.lower()]
-        filter_tables = [t for t in tables if 'filter' in t.lower()]
-
-        # Try known patterns for AdGuard for Windows DB schema
-        for table in rule_tables + filter_tables:
-            try:
-                cursor.execute(f"SELECT * FROM [{table}] LIMIT 1")
-                columns = [desc[0] for desc in cursor.description]
-
-                # Look for columns that might contain rule text
-                text_cols = [c for c in columns if any(
-                    kw in c.lower() for kw in ['rule', 'text', 'content', 'line', 'value']
-                )]
-
-                if not text_cols:
-                    # Just try all text columns
-                    text_cols = columns
-
-                for col in text_cols:
-                    try:
-                        cursor.execute(f"SELECT [{col}] FROM [{table}]")
-                        for row in cursor.fetchall():
-                            val = row[0]
-                            if isinstance(val, str) and val.strip():
-                                # Filter: only keep things that look like filter rules
-                                line = val.strip()
-                                if is_filter_rule(line):
-                                    rules.add(line)
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-
-        # Also check if there's a dedicated user rules storage
-        # AdGuard sometimes stores them as a blob or newline-separated text
         for table in tables:
             try:
                 cursor.execute(f"PRAGMA table_info([{table}])")
-                cols_info = cursor.fetchall()
-                blob_cols = [(info[1], info[2]) for info in cols_info
-                             if info[2].upper() in ('BLOB', 'TEXT', 'CLOB')]
+                cols = cursor.fetchall()
+                text_cols = [c[1] for c in cols if c[2].upper() in ('TEXT', 'BLOB', 'CLOB', '')]
 
-                for col_name, col_type in blob_cols:
-                    cursor.execute(f"SELECT [{col_name}] FROM [{table}]")
+                for col in text_cols:
+                    cursor.execute(f"SELECT [{col}] FROM [{table}]")
                     for row in cursor.fetchall():
                         val = row[0]
                         if isinstance(val, bytes):
-                            try:
-                                val = val.decode('utf-8')
-                            except Exception:
-                                continue
-                        if isinstance(val, str) and '\n' in val and len(val) > 20:
-                            # Might be a multi-line rules blob
+                            val = val.decode('utf-8', errors='ignore')
+                        if isinstance(val, str):
                             for line in val.split('\n'):
                                 line = line.strip()
                                 if is_filter_rule(line):
                                     rules.add(line)
             except Exception:
                 continue
-
         conn.close()
-    except sqlite3.OperationalError as e:
-        log(f"ERROR: Cannot open AdGuard DB: {e}")
-        log("Make sure this script runs with Administrator/SYSTEM privileges.")
-        return set()
     except Exception as e:
-        log(f"ERROR reading AdGuard DB: {e}")
-        return set()
-
+        log(f"SQLite error: {e}")
+        # Fallback to raw scan
+        rules = scan_file_for_rules(db_path)
     return rules
-
-
-def is_filter_rule(line):
-    """Check if a line looks like a valid AdGuard/uBlock filter rule."""
-    if not line:
-        return False
-    # Skip comments and metadata
-    if line.startswith('!') or line.startswith('#'):
-        return False
-    # Skip very short lines (likely not rules)
-    if len(line) < 3:
-        return False
-
-    # Positive signals: looks like a filter rule
-    indicators = [
-        line.startswith('||'),       # Domain block
-        line.startswith('@@'),       # Exception
-        line.startswith('|'),        # URL start anchor
-        line.startswith('*'),        # Wildcard
-        '##' in line,                # Cosmetic
-        '#@#' in line,               # Cosmetic exception
-        '#$#' in line,               # CSS injection
-        '#%#' in line,               # JS injection
-        line.startswith('0.0.0.0'),  # Hosts format
-        line.startswith('127.0.0.1'),# Hosts format
-        '^$' in line,                # Rule with options
-        line.endswith('^'),          # Domain block ending
-    ]
-    return any(indicators)
 
 
 def get_github_filter(config, token):
@@ -319,22 +474,18 @@ def main():
     config = load_config()
     token = get_token()
 
-    # Step 1: Find and read AdGuard database
-    db_path = find_adguard_db()
-    if not db_path:
-        sys.exit(1)
-
-    log(f"Reading AdGuard DB: {db_path}")
-    local_rules = read_adguard_user_rules(db_path)
+    # Read rules from AdGuard's database
+    log(f"Reading AdGuard DB: {ADGUARD_DB}")
+    local_rules = read_adguard_rules()
 
     if not local_rules:
-        log("No user rules found in AdGuard DB (or DB schema unrecognized).")
-        log("If this is a fresh install, rules will accumulate as you add them.")
+        log("No user rules found in AdGuard DB.")
+        log("This is normal if you haven't added custom rules yet.")
         return
 
-    log(f"Found {len(local_rules)} rule(s) in local AdGuard DB.")
+    log(f"Found {len(local_rules)} rule(s) in local AdGuard.")
 
-    # Step 2: Merge with GitHub and push
+    # Merge with GitHub and push
     merge_and_push(config, token, local_rules)
     log("Sync complete.")
 

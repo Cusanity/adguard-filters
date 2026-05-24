@@ -34,6 +34,8 @@ fi
 
 if $RUN_NOW; then
     echo "Running sync now..."
+    echo "Pulling latest scripts..."
+    git -C "$SCRIPT_DIR" pull
     python3 "$SCRIPT_DIR/sync_daemon.py"
     exit $?
 fi
@@ -56,10 +58,11 @@ if [[ -z "$TOKEN" ]]; then
     exit 1
 fi
 
-# --- Write wrapper that sets env ---
+# --- Write wrapper that pulls latest scripts and sets env ---
 WRAPPER="$SCRIPT_DIR/sync_runner.sh"
 cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
+git -C "${SCRIPT_DIR}" pull >> "${SCRIPT_DIR}/sync.log" 2>&1
 export GITHUB_TOKEN="${TOKEN}"
 exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"
 EOF

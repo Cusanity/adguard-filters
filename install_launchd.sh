@@ -35,6 +35,8 @@ fi
 
 if $RUN_NOW; then
     echo "Running sync now..."
+    echo "Pulling latest scripts..."
+    git -C "$SCRIPT_DIR" pull
     python3 "$SCRIPT_DIR/sync_daemon.py"
     exit $?
 fi
@@ -57,6 +59,16 @@ if [[ -z "$TOKEN" ]]; then
     exit 1
 fi
 
+# --- Write wrapper that pulls latest scripts and sets env ---
+WRAPPER="$SCRIPT_DIR/sync_runner.sh"
+cat > "$WRAPPER" <<EOF
+#!/usr/bin/env bash
+git -C "${SCRIPT_DIR}" pull >> "${SCRIPT_DIR}/sync.log" 2>&1
+export GITHUB_TOKEN="${TOKEN}"
+exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"
+EOF
+chmod 700 "$WRAPPER"  # contains token
+
 # --- Write plist ---
 mkdir -p "$(dirname "$PLIST")"
 cat > "$PLIST" <<EOF
@@ -69,16 +81,11 @@ cat > "$PLIST" <<EOF
     <string>${LABEL}</string>
     <key>ProgramArguments</key>
     <array>
-        <string>${PYTHON}</string>
-        <string>${SCRIPT_DIR}/sync_daemon.py</string>
+        <string>/bin/bash</string>
+        <string>${WRAPPER}</string>
     </array>
     <key>WorkingDirectory</key>
     <string>${SCRIPT_DIR}</string>
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>GITHUB_TOKEN</key>
-        <string>${TOKEN}</string>
-    </dict>
     <key>StartInterval</key>
     <integer>${INTERVAL_SEC}</integer>
     <key>RunAtLoad</key>

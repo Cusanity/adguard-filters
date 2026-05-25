@@ -1,0 +1,7 @@
+{
+    "owner": "Cusanity",
+    "repo": "adguard-filters",
+    "filter_path": "filter.txt",
+    "branch": "master",
+    "adguard_flm_db": "/path/to/agflm_standard.db"
+}

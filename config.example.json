@@ -18,5 +18,9 @@
     "adguard_home_url": "http://localhost:3000",
     "adguard_home_user": "",
     "adguard_home_password": "",
-    "adguard_home_yaml": ""
+    "adguard_home_yaml": "",
+
+    "//log": "Optional: override the sync log file or directory. log_path wins over log_dir.",
+    "log_path": "",
+    "log_dir": ""
 }

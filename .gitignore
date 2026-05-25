@@ -1,5 +1,6 @@
 .env
 __pycache__/
 sync_runner.cmd
+sync_runner.sh
 sync.log
 config.json

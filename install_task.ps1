@@ -93,6 +93,20 @@ if (-not (Test-Path $EnvFile)) {
     exit 1
 }
 
+$logPath = Join-Path $ScriptDir "sync.log"
+$config = Get-Content $ConfigFile | ConvertFrom-Json
+if ($config.log_path) {
+    $logPath = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($config.log_path)
+}
+elseif ($config.log_dir) {
+    $logPath = Join-Path $config.log_dir "sync.log"
+}
+
+$logDir = Split-Path -Parent $logPath
+if ($logDir) {
+    New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+}
+
 # Find Python executable
 $python = Get-Command python -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source
 if (-not $python) {
@@ -156,10 +170,10 @@ $settings = New-ScheduledTaskSettingsSet `
 # SYSTEM needs the GITHUB_TOKEN as an environment variable
 # We'll create a wrapper script that sets it
 $wrapperPath = Join-Path $ScriptDir "sync_runner.cmd"
-$logPath = Join-Path $ScriptDir "sync.log"
 $wrapperContent = @"
 @echo off
 set "GITHUB_TOKEN=$githubToken"
+set "SYNC_LOG_PATH=$logPath"
 git -C "$ScriptDir" pull >>"$logPath" 2>&1
 "$python" "$SyncScript"
 "@

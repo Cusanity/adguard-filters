@@ -48,6 +48,36 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
+resolve_log_path() {
+    "$PYTHON" - "$SCRIPT_DIR" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+script_dir = Path(sys.argv[1])
+default = script_dir / "sync.log"
+
+try:
+    config = json.loads((script_dir / "config.json").read_text())
+except Exception:
+    print(default)
+    raise SystemExit
+
+log_path = (config.get("log_path") or "").strip()
+log_dir = (config.get("log_dir") or "").strip()
+
+if log_path:
+    print(Path(log_path).expanduser())
+elif log_dir:
+    print(Path(log_dir).expanduser() / "sync.log")
+else:
+    print(default)
+PY
+}
+
+LOG_PATH="$(resolve_log_path)"
+mkdir -p "$(dirname "$LOG_PATH")"
+
 # --- Load token ---
 TOKEN=""
 ENV_FILE="$SCRIPT_DIR/.env"
@@ -63,7 +93,9 @@ fi
 WRAPPER="$SCRIPT_DIR/sync_runner.sh"
 cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
-git -C "${SCRIPT_DIR}" pull >> "${SCRIPT_DIR}/sync.log" 2>&1
+mkdir -p "$(dirname "${LOG_PATH}")"
+export SYNC_LOG_PATH="${LOG_PATH}"
+git -C "${SCRIPT_DIR}" pull >> "${LOG_PATH}" 2>&1
 export GITHUB_TOKEN="${TOKEN}"
 exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"
 EOF
@@ -91,9 +123,9 @@ cat > "$PLIST" <<EOF
     <key>RunAtLoad</key>
     <true/>
     <key>StandardOutPath</key>
-    <string>${SCRIPT_DIR}/sync.log</string>
+    <string>${LOG_PATH}</string>
     <key>StandardErrorPath</key>
-    <string>${SCRIPT_DIR}/sync.log</string>
+    <string>${LOG_PATH}</string>
 </dict>
 </plist>
 EOF

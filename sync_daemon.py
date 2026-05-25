@@ -35,7 +35,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
-LOG_PATH = SCRIPT_DIR / "sync.log"
+DEFAULT_LOG_PATH = SCRIPT_DIR / "sync.log"
+LOG_PATH = DEFAULT_LOG_PATH
 
 NTFY_URL = "https://ntfy.cusanity.synology.me/alerts"
 
@@ -91,10 +92,28 @@ def log(msg):
     line = f"[{timestamp}] {msg}"
     print(line)
     try:
+        LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
         with open(LOG_PATH, "a", encoding="utf-8") as f:
             f.write(line + "\n")
     except Exception:
         pass
+
+
+def resolve_log_path(config=None):
+    override = os.environ.get("SYNC_LOG_PATH")
+    if override and override.strip():
+        return Path(override.strip()).expanduser()
+
+    if config:
+        log_path = (config.get("log_path") or "").strip()
+        if log_path:
+            return Path(log_path).expanduser()
+
+        log_dir = (config.get("log_dir") or "").strip()
+        if log_dir:
+            return Path(log_dir).expanduser() / "sync.log"
+
+    return DEFAULT_LOG_PATH
 
 
 def load_config():
@@ -422,10 +441,13 @@ def merge_and_push(config, token, local_rules):
 
 
 def main():
-    log("=" * 50)
-    log("AdGuard Filter Sync starting...")
+    global LOG_PATH
 
     config = load_config()
+    LOG_PATH = resolve_log_path(config)
+
+    log("=" * 50)
+    log("AdGuard Filter Sync starting...")
     token = get_token()
 
     # Read rules from the local AdGuard installation

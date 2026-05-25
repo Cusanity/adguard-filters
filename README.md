@@ -47,12 +47,13 @@ Go to https://github.com/settings/tokens → **Fine-grained token** or **Classic
 
 ### 3. Configure
 
+`config.json` is **gitignored** (it's machine-specific). Create it from the example on each device:
+
 ```bash
 cp config.example.json config.json
-cp .env.example .env
 ```
 
-`config.json` — shared settings (safe to commit):
+`config.json` — shared settings (safe to keep locally, do **not** commit):
 ```json
 {
     "owner": "Cusanity",
@@ -61,8 +62,9 @@ cp .env.example .env
     "branch": "master"
 }
 ```
+The `owner`/`repo`/`filter_path`/`branch` fields are the same on every device. Only add `adguard_flm_db` (Windows/macOS) or `adguard_home_*` (Linux) if auto-detection fails — see `config.example.json` for all options.
 
-`.env` — secret (never commit):
+`.env` — secret, never commit:
 ```
 GITHUB_TOKEN=ghp_your_token_here
 ```
@@ -125,10 +127,16 @@ chmod +x install_launchd.sh
 **Local AdGuard DB path (auto-detected, tried in order):**
 ```
 ~/Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/FLM/agflm_standard.db
+~/Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/filters/agflm_standard.db
 ~/Library/Application Support/AdGuard/FLM/agflm_standard.db
+~/Library/Application Support/AdGuard/filters/agflm_standard.db
 ~/Library/Application Support/com.adguard.mac.adguard/FLM/agflm_standard.db
+~/Library/Application Support/com.adguard.mac.adguard/filters/agflm_standard.db
 ```
-If none found, set `"adguard_flm_db": "/your/path/agflm_standard.db"` in `config.json`.
+If none found, locate it yourself and set `"adguard_flm_db"` in `config.json`:
+```bash
+find ~/Library -name "agflm_standard.db" 2>/dev/null
+```
 
 **Manual push:**
 ```bash

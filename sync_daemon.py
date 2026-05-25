@@ -67,9 +67,12 @@ _FLM_PATHS = {
     "Darwin": [
         # Mac App Store build (sandboxed, group container)
         Path.home() / "Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/FLM/agflm_standard.db",
+        Path.home() / "Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/filters/agflm_standard.db",
         # Direct-download build
         Path.home() / "Library/Application Support/AdGuard/FLM/agflm_standard.db",
+        Path.home() / "Library/Application Support/AdGuard/filters/agflm_standard.db",
         Path.home() / "Library/Application Support/com.adguard.mac.adguard/FLM/agflm_standard.db",
+        Path.home() / "Library/Application Support/com.adguard.mac.adguard/filters/agflm_standard.db",
     ],
     # Linux/other: AdGuard Home (no desktop FLM app); handled separately via YAML/API
 }

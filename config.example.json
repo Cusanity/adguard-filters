@@ -3,5 +3,20 @@
     "repo": "adguard-filters",
     "filter_path": "filter.txt",
     "branch": "master",
-    "adguard_flm_db": "/path/to/agflm_standard.db"
+
+    "//": "--- Optional overrides — only set what auto-detection gets wrong ---",
+
+    "//flm": "Windows/macOS: override FLM DB path if auto-detection fails.",
+    "//flm_paths": [
+        "Windows default : C:\\ProgramData\\Adguard\\FLM\\agflm_standard.db",
+        "macOS variants  : ~/Library/Application Support/AdGuard/filters/agflm_standard.db",
+        "                  ~/Library/Group Containers/TC3Q7MAJXF.com.adguard.mac/Library/Application Support/filters/agflm_standard.db"
+    ],
+    "adguard_flm_db": "",
+
+    "//agh": "Linux (AdGuard Home): REST API is tried first, YAML file second.",
+    "adguard_home_url": "http://localhost:3000",
+    "adguard_home_user": "",
+    "adguard_home_password": "",
+    "adguard_home_yaml": ""
 }

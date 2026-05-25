@@ -35,6 +35,7 @@ fi
 if $RUN_NOW; then
     echo "Running sync now..."
     echo "Pulling latest scripts..."
+    git -C "$SCRIPT_DIR" checkout -- filter.txt 2>/dev/null
     git -C "$SCRIPT_DIR" pull
     python3 "$SCRIPT_DIR/sync_daemon.py"
     exit $?
@@ -94,6 +95,7 @@ cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
 mkdir -p "$(dirname "${LOG_PATH}")"
 export SYNC_LOG_PATH="${LOG_PATH}"
+git -C "${SCRIPT_DIR}" checkout -- filter.txt >> "${LOG_PATH}" 2>&1
 git -C "${SCRIPT_DIR}" pull >> "${LOG_PATH}" 2>&1
 export GITHUB_TOKEN="${TOKEN}"
 exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"

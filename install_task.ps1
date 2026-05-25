@@ -61,6 +61,7 @@ if ($RunNow) {
 
     # Pull latest scripts from GitHub
     Write-Host "Pulling latest scripts..."
+    git -C $ScriptDir checkout -- filter.txt 2>&1 | Out-Null
     git -C $ScriptDir pull 2>&1 | Write-Host
 
     # Load token from .env for the environment
@@ -174,6 +175,7 @@ $wrapperContent = @"
 @echo off
 set "GITHUB_TOKEN=$githubToken"
 set "SYNC_LOG_PATH=$logPath"
+git -C "$ScriptDir" checkout -- filter.txt >>"$logPath" 2>&1
 git -C "$ScriptDir" pull >>"$logPath" 2>&1
 "$python" "$SyncScript"
 "@

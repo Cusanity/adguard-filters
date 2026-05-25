@@ -129,10 +129,13 @@ $action = New-ScheduledTaskAction `
     -Argument "`"$SyncScript`"" `
     -WorkingDirectory $ScriptDir
 
-# Run every N minutes
+# Run every N minutes, aligned to clock (next :00 or :30 boundary)
+$now = Get-Date
+$minutesToNext = $IntervalMinutes - ($now.Minute % $IntervalMinutes)
+$startAt = $now.AddMinutes($minutesToNext).ToString("HH:mm")
 $trigger = New-ScheduledTaskTrigger `
     -Once `
-    -At (Get-Date) `
+    -At $startAt `
     -RepetitionInterval (New-TimeSpan -Minutes $IntervalMinutes) `
     -RepetitionDuration (New-TimeSpan -Days 9999)
 

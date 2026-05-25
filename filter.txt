@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-05-25 01:00 UTC
+! Last modified: 2026-05-25 21:30 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -46,3 +46,12 @@ x.com##aside[aria-label="订阅 Premium"]
 x.com##button[data-testid="GrokDrawerHeader"]
 x.com##div:has(> button[data-testid*="drawer"])
 x.com##nav[aria-label="页脚"]
+zhihu.com##.AppHeader-profileAvatarRedDot
+zhihu.com##a[href*="zhida.zhihu.com"]
+zhihu.com##a[href*="zhihu.com/consult"]
+zhihu.com##a[href*="zhihu.com/creator"]
+zhihu.com##a[href*="zhihu.com/education/learning"]
+zhihu.com##a[href*="zhihu.com/ring-feeds"]
+zhihu.com##button[aria-label="创作"]
+zhihu.com##button[id*="Popover"][aria-label*="私信"]
+zhihu.com##footer[role="contentinfo"]

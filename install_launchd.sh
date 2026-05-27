@@ -49,35 +49,34 @@ if [[ -z "$PYTHON" ]]; then
     exit 1
 fi
 
-resolve_log_path() {
+resolve_log_dir() {
     "$PYTHON" - "$SCRIPT_DIR" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 script_dir = Path(sys.argv[1])
-default = script_dir / "sync.log"
 
 try:
     config = json.loads((script_dir / "config.json").read_text())
 except Exception:
-    print(default)
+    print(script_dir)
     raise SystemExit
 
 log_path = (config.get("log_path") or "").strip()
-log_dir = (config.get("log_dir") or "").strip()
+log_dir  = (config.get("log_dir")  or "").strip()
 
 if log_path:
-    print(Path(log_path).expanduser())
+    print(Path(log_path).expanduser().parent)
 elif log_dir:
-    print(Path(log_dir).expanduser() / "sync.log")
+    print(Path(log_dir).expanduser())
 else:
-    print(default)
+    print(script_dir)
 PY
 }
 
-LOG_PATH="$(resolve_log_path)"
-mkdir -p "$(dirname "$LOG_PATH")"
+LOG_DIR="$(resolve_log_dir)"
+mkdir -p "$LOG_DIR"
 
 # --- Load token ---
 TOKEN=""
@@ -94,10 +93,11 @@ fi
 WRAPPER="$SCRIPT_DIR/sync_runner.sh"
 cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
-mkdir -p "$(dirname "${LOG_PATH}")"
-export SYNC_LOG_PATH="${LOG_PATH}"
-git -C "${SCRIPT_DIR}" checkout -- filter.txt >> "${LOG_PATH}" 2>&1
-git -C "${SCRIPT_DIR}" pull >> "${LOG_PATH}" 2>&1
+LOG="${LOG_DIR}/sync-\$(date +%F).log"
+mkdir -p "${LOG_DIR}"
+exec >> "\$LOG" 2>&1
+git -C "${SCRIPT_DIR}" checkout -- filter.txt
+git -C "${SCRIPT_DIR}" pull
 export GITHUB_TOKEN="${TOKEN}"
 exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"
 EOF
@@ -124,10 +124,6 @@ cat > "$PLIST" <<EOF
     <integer>${INTERVAL_SEC}</integer>
     <key>RunAtLoad</key>
     <true/>
-    <key>StandardOutPath</key>
-    <string>${LOG_PATH}</string>
-    <key>StandardErrorPath</key>
-    <string>${LOG_PATH}</string>
 </dict>
 </plist>
 EOF

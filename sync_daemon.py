@@ -29,14 +29,14 @@ import tempfile
 import time
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
-DEFAULT_LOG_PATH = SCRIPT_DIR / "sync.log"
-LOG_PATH = DEFAULT_LOG_PATH
+DEFAULT_LOG_DIR = SCRIPT_DIR
+LOG_PATH = DEFAULT_LOG_DIR / f"sync-{datetime.now().strftime('%Y-%m-%d')}.log"
 
 NTFY_URL = "https://ntfy.cusanity.synology.me/alerts"
 
@@ -107,13 +107,31 @@ def resolve_log_path(config=None):
     if config:
         log_path = (config.get("log_path") or "").strip()
         if log_path:
-            return Path(log_path).expanduser()
+            p = Path(log_path).expanduser()
+            # If it's an explicit file path, honour it as-is (no date suffix)
+            return p
 
         log_dir = (config.get("log_dir") or "").strip()
         if log_dir:
-            return Path(log_dir).expanduser() / "sync.log"
+            base = Path(log_dir).expanduser()
+        else:
+            base = DEFAULT_LOG_DIR
+    else:
+        base = DEFAULT_LOG_DIR
 
-    return DEFAULT_LOG_PATH
+    return base / f"sync-{datetime.now().strftime('%Y-%m-%d')}.log"
+
+
+def rotate_logs(log_dir: Path, keep_days: int = 3):
+    """Delete sync-YYYY-MM-DD.log files older than keep_days days."""
+    cutoff = datetime.now() - timedelta(days=keep_days)
+    for f in log_dir.glob("sync-????-??-??.log"):
+        try:
+            file_date = datetime.strptime(f.stem[5:], "%Y-%m-%d")
+            if file_date < cutoff:
+                f.unlink()
+        except (ValueError, OSError):
+            pass
 
 
 def load_config():
@@ -445,6 +463,7 @@ def main():
 
     config = load_config()
     LOG_PATH = resolve_log_path(config)
+    rotate_logs(LOG_PATH.parent)
 
     log("=" * 50)
     log("AdGuard Filter Sync starting...")

@@ -36,7 +36,7 @@ SCRIPT_DIR = Path(__file__).parent
 CONFIG_PATH = SCRIPT_DIR / "config.json"
 ENV_PATH = SCRIPT_DIR / ".env"
 DEFAULT_LOG_DIR = SCRIPT_DIR
-LOG_PATH = DEFAULT_LOG_DIR / f"sync-{datetime.now().strftime('%Y-%m-%d')}.log"
+LOG_PATH = SCRIPT_DIR / "sync.log"
 
 NTFY_URL = "https://ntfy.cusanity.synology.me/alerts"
 
@@ -119,19 +119,15 @@ def resolve_log_path(config=None):
     else:
         base = DEFAULT_LOG_DIR
 
-    return base / f"sync-{datetime.now().strftime('%Y-%m-%d')}.log"
+    return base / "sync.log"
 
 
-def rotate_logs(log_dir: Path, keep_days: int = 3):
-    """Delete sync-YYYY-MM-DD.log files older than keep_days days."""
-    cutoff = datetime.now() - timedelta(days=keep_days)
-    for f in log_dir.glob("sync-????-??-??.log"):
-        try:
-            file_date = datetime.strptime(f.stem[5:], "%Y-%m-%d")
-            if file_date < cutoff:
-                f.unlink()
-        except (ValueError, OSError):
-            pass
+def rotate_logs(log_path: Path):
+    """Truncate the log file if it was last written on a previous day."""
+    if log_path.exists():
+        mtime_date = datetime.fromtimestamp(log_path.stat().st_mtime).date()
+        if mtime_date < datetime.now().date():
+            log_path.write_text("")
 
 
 def load_config():
@@ -463,7 +459,7 @@ def main():
 
     config = load_config()
     LOG_PATH = resolve_log_path(config)
-    rotate_logs(LOG_PATH.parent)
+    rotate_logs(LOG_PATH)
 
     log("=" * 50)
     log("AdGuard Filter Sync starting...")

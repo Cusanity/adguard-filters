@@ -75,6 +75,7 @@ PY
 }
 
 LOG_DIR="$(resolve_log_dir)"
+LOG_PATH="$LOG_DIR/sync.log"
 mkdir -p "$LOG_DIR"
 
 # --- Load token ---
@@ -92,10 +93,13 @@ fi
 WRAPPER="$SCRIPT_DIR/sync_runner.sh"
 cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
-LOG="${LOG_DIR}/sync-\$(date +%F).log"
+LOG="${LOG_PATH}"
 mkdir -p "${LOG_DIR}"
-git -C "${SCRIPT_DIR}" checkout -- filter.txt >> "\$LOG" 2>&1
-git -C "${SCRIPT_DIR}" pull >> "\$LOG" 2>&1
+# Truncate if last written on a previous day
+if [ -f "\$LOG" ] && [ "\$(date -r "\$LOG" +%F)" != "\$(date +%F)" ]; then : > "\$LOG"; fi
+exec >> "\$LOG" 2>&1
+git -C "${SCRIPT_DIR}" checkout -- filter.txt
+git -C "${SCRIPT_DIR}" pull
 export GITHUB_TOKEN="${TOKEN}"
 exec "${PYTHON}" "${SCRIPT_DIR}/sync_daemon.py"
 EOF
@@ -121,6 +125,7 @@ echo "Installed cron job."
 echo "  Schedule : $CRON_EXPR (every $INTERVAL min)"
 echo "  Python   : $PYTHON"
 echo "  Wrapper  : $WRAPPER"
+echo "  Log      : $LOG_PATH"
 echo ""
 echo "Make sure config.json has AdGuard Home settings:"
 echo "  \"adguard_home_url\": \"http://localhost:3000\""

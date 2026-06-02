@@ -76,6 +76,7 @@ PY
 }
 
 LOG_DIR="$(resolve_log_dir)"
+LOG_PATH="$LOG_DIR/sync.log"
 mkdir -p "$LOG_DIR"
 
 # --- Load token ---
@@ -93,8 +94,10 @@ fi
 WRAPPER="$SCRIPT_DIR/sync_runner.sh"
 cat > "$WRAPPER" <<EOF
 #!/usr/bin/env bash
-LOG="${LOG_DIR}/sync-\$(date +%F).log"
+LOG="${LOG_PATH}"
 mkdir -p "${LOG_DIR}"
+# Truncate if last written on a previous day
+if [ -f "\$LOG" ] && [ "\$(date -r "\$LOG" +%F)" != "\$(date +%F)" ]; then : > "\$LOG"; fi
 exec >> "\$LOG" 2>&1
 git -C "${SCRIPT_DIR}" checkout -- filter.txt
 git -C "${SCRIPT_DIR}" pull

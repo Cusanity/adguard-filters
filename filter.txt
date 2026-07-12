@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-07-11 12:03 UTC
+! Last modified: 2026-07-12 22:58 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -29,6 +29,7 @@
 @@||twac.immigration.gov.tw^$important,document
 @@||us.shop.battle.net^$important,document
 @@||weibo.com^$important,document
+@@||www.bestbuy.com^$important,document
 @@||www.delta.com^$important,document
 @@||www.dentalpressbooks.com^$important,document
 @@||www.fox.com^$important,document

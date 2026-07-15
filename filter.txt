@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-07-12 22:58 UTC
+! Last modified: 2026-07-15 19:00 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -26,6 +26,7 @@
 @@||seatgeek.com^$important,document
 @@||servedby.flashtalking.com^$important,document
 @@||support.apple.com^$important,document
+@@||tello.com^$important,document
 @@||twac.immigration.gov.tw^$important,document
 @@||us.shop.battle.net^$important,document
 @@||weibo.com^$important,document

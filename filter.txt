@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-08-08 02:00 UTC
+! Last modified: 2026-08-08 02:44 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -22,6 +22,7 @@
 @@||my.mintmobile.com^$important,document
 @@||myaccount.draftkings.com^$important,document
 @@||n8n.cusanity.synology.me^$important,document
+@@||pdt.tradedoubler.com^$important,document
 @@||polymarket.com^$important,document
 @@||seatgeek.com^$important,document
 @@||servedby.flashtalking.com^$important,document

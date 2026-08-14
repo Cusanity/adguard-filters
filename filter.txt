@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-08-10 14:00 UTC
+! Last modified: 2026-08-14 16:30 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -15,6 +15,7 @@
 @@||dio.ofthb.optum.com^$important,document
 @@||fantasy.espn.com^$important,document
 @@||fifaworldcup26.lounge.fifa.com^$important,document
+@@||getmalus.com^$important,document
 @@||icelandair-ehf.campaign.playable.com^$important,document
 @@||kalshi.com^$important,document
 @@||login.microsoftonline.com^$important,document

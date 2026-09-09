@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-09-04 06:00 UTC
+! Last modified: 2026-09-09 03:58 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -48,6 +48,7 @@
 ball.stream###signal-toggle
 bilibili.com###app > div.adblock-tips:nth-child(2)
 bilibili.com###app > div.adblock-tips:nth-child(2) > p:first-child
+bilibili.com###mirror-vdcon > div.left-container.scroll-sticky:first-child > div.ad-report.strip-ad.left-banner:nth-child(8)
 gyg.la###bads
 hearthpwn.com###site-main > section.atf:nth-child(4) > div.page-region.gray-block-wrapper > div.xt-placement.xt-main-med-rect:last-child
 javdb.com###search-bar-container > div.column > div.search-bar-wrap > div.search-recent-keywords:last-child

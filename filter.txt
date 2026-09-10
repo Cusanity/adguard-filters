@@ -3,7 +3,7 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-09-10 05:09 UTC
+! Last modified: 2026-09-10 21:00 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
@@ -51,7 +51,14 @@ bilibili.com###app > div.adblock-tips:nth-child(2) > p:first-child
 bilibili.com###mirror-vdcon > div.left-container.scroll-sticky:first-child > div.ad-report.strip-ad.left-banner:nth-child(8)
 bilibili.com###mirror-vdcon > div.right-container:nth-child(2) > div.right-container-inner.scroll-sticky > div.video-pod-above-modules:nth-child(2) > div.video-pod-above-modules__inner > div.video-card-ad-small:last-child > div.video-card-ad-small-inner > div.ad-report:first-child > a.ad-report-inner > div.vcd
 bilibili.com##.ad-report.strip-ad.left-banner
+bilibili.com##.download-client-trigger
 bilibili.com##.video-card-ad-small
+bilibili.com##a[href*="game.bilibili.com/platform"]
+bilibili.com##a[href*="manga.bilibili.com"]
+bilibili.com##a[href*="show.bilibili.com"]
+bilibili.com##li.right-entry-item.right-entry-item--upload
+bilibili.com##li.right-entry-item:has(a[href*="member.bilibili.com/platform/home"])
+bilibili.com##li.right-entry-item:has-text(创作中心)
 gyg.la###bads
 hearthpwn.com###site-main > section.atf:nth-child(4) > div.page-region.gray-block-wrapper > div.xt-placement.xt-main-med-rect:last-child
 javdb.com###search-bar-container > div.column > div.search-bar-wrap > div.search-recent-keywords:last-child

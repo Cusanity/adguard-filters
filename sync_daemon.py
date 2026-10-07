@@ -136,7 +136,7 @@ def load_config():
         log(f"ERROR: {msg}")
         notify_error(msg)
         sys.exit(1)
-    with open(CONFIG_PATH) as f:
+    with open(CONFIG_PATH, encoding="utf-8-sig") as f:
         return json.load(f)
 
 

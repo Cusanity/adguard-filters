@@ -3,13 +3,14 @@
 ! Homepage: https://github.com/YOUR_USERNAME/adguard-filters
 ! Expires: 1 hour
 ! Version: 1.0.0
-! Last modified: 2026-09-28 22:04 UTC
+! Last modified: 2026-10-24 18:56 UTC
 !
 ! Add your custom rules below this line
 ! Syntax: https://adguard.com/kb/general/ad-filtering/create-own-filters/
 !
 
 2admin.cusanity.synology.me###app > div.openSidebar.openMenuTabs.app-wrapper.relative > div.main-container:nth-child(3) > div.footer.app-footer:last-child > div.flex.w-full.flex-col.gap-4.md\:justify-between.md\:flex-row > div.flex.flex-row.gap-2.md\:flex-col.lg\:flex-row:last-child > div > div.flex.w-full.flex-col.gap-2.md\:flex-row.items-center:first-child > div.flex.flex-wrap.gap-y-2.items-center > span:first-child
+@@||9a19f7-987634616.antpcdn.com^$important,document
 @@||a069-access.nyc.gov^$important,document
 @@||app.bucky.uwbadgers.com^$important,document
 @@||dio.ofthb.optum.com^$important,document
